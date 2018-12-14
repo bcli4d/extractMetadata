@@ -154,8 +154,7 @@ def delete_dicom_store(args, api_key):
     dicom_store_name = '{}/dicomStores/{}'.format(
         dicom_store_parent, args.dicom_store_id)
 
-    request = client.projects().locations().datasets(
-    ).dicomStores().delete(name=dicom_store_name)
+    request = client.projects().locations().datasets().dicomStores().delete(name=dicom_store_name)
 
     try:
         response = request.execute()
@@ -174,8 +173,7 @@ def create_dicom_store(args, api_key):
         delete_dicom_store(args, api_key)
 
     client = get_client(args, api_key)
-    dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(
-        args.project_id, args.location, args.dataset_id)
+    dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(args.project_id, args.location, args.dataset_id)
 
     body = {}
 
@@ -210,16 +208,38 @@ def getZipFromGCS(args, zip):
     return dicomDirectory
 
 # Remove zip file and extracted .dcms of a series after processing
-def cleanupSeries(args, http):
-    deleteDatastore(args, http)
+def cleanupSeries(args, api_key):
+    delete_dicom_store(args, api_key)
+
     zipfileName = join(args.scratch,'dcm.zip')
     dicomDirectory = join(args.scratch,'dicoms')
-
     shutil.rmtree(dicomDirectory)
     os.remove(zipfileName)
 
+def wait_for_operation_completion(args, api_key, path, timeout):
 
-def wait_for_operation_completion(path, timeout):
+    """Export metadata to a BQ table"""
+    client = get_client(args, api_key)
+
+    request = client.projects().locations().datasets().operations().get(name=path)
+
+    success = False
+    while time.time() <timeout:
+        print('Waiting for operation completion...')
+        response = request.execute()
+        if 'done' in response:
+            if response['done'] == True and 'error' not in response:
+                success = True;
+            break
+        time.sleep(1)
+
+    print('Full response:\n{0}'.format(response))
+    assert success, "operation did not complete successfully in time limit"
+    print('Success!')
+    return response
+
+
+def wait_for_operation_completion1(path, timeout):
     success = False
     while time.time() < timeout:
         print('Waiting for operation completion...')
@@ -231,18 +251,17 @@ def wait_for_operation_completion(path, timeout):
             if response['done'] == True and 'error' not in response:
                 success = True;
             break
-        time.sleep(30)
+        time.sleep(1)
 
-    print('Full response:\n{0}'.format(content))
+    print('Full response:\n{0}'.format(response))
     assert success, "operation did not complete successfully in time limit"
     print('Success!')
     return response
 
 
-def export_dicom_instance(args, api_key):
+def export_dicom_metadata(args, api_key):
 
-    """Export data to a Google Cloud Storage bucket by copying
-    it from the DICOM store."""
+    """Export metadata to a BQ table"""
     client = get_client(args, api_key)
     dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(
         args.project_id, args.location, args.dataset_id)
@@ -259,55 +278,23 @@ def export_dicom_instance(args, api_key):
       }
     }
 
-#    body = {
-#        "outputConfig":
-#            {
-#                "gcsDestination":
-#                    {
-#                        "uriPrefix": 'gs://{}'.format(uri_prefix)
-#                    }
-#            }
-#    }
-
     request = client.projects().locations().datasets().dicomStores().export(
         name=dicom_store_name, body=body)
 
     try:
         response = request.execute()
         print('Exported DICOM metadata to table {}.{}: '.format(args.bq_dataset, args.bq_table))
+        metadata_operation_name = response['name']
+
+        timeout = time.time() + 10 * 60  # Wait up to 10 minutes.
+        path = join(HEALTHCARE_API_URL, metadata_operation_name)
+        path = metadata_operation_name
+        response = wait_for_operation_completion(args, api_key, path, timeout)
+
         return response
     except HttpError as e:
         print('Error, DICOM metadata not exported: {}'.format(e))
         return ""
-
-
-def exportToBQ(args, http):
-    # Path to request ExportDicomData operation.
-    dataset_url = join(HEALTHCARE_API_URL, 'projects', args.project_id, 'locations', args.location, 'datasets',
-                               args.dataset_id)
-    dicom_store_url = join(dataset_url, 'dicomStores', args.dicom_store_id)
-    path = dicom_store_url + ":export"
-
-    # Headers (send request in JSON format).
-    headers = {'Content-Type': 'application/json'}
-
-    # Body (encoded in JSON format).
-    output_config = {
-        'output_config': {'bigQueryDestination': {'dataset': args.bq_dataset, 'table': args.bq_table, 'overwriteTable': 'TRUE'}}}
-    body = json.dumps(output_config)
-
-    resp, content = http.request(path, method='POST', headers=headers, body=body)
-    assert resp.status == 200, 'error exporting to JPEG, code: {0}, response: {1}'.format(resp.status, content)
-    print('Full response:\n{0}'.format(content))
-
-    # Record operation_name so we can poll for it later.
-    response = json.loads(content)
-    metadata_operation_name = response['name']
-
-    timeout = time.time() + 10 * 60  # Wait up to 10 minutes.
-    path = join(HEALTHCARE_API_URL, metadata_operation_name)
-    _ = wait_for_operation_completion(path, timeout)
-
 
 def get_session(service_account_json):
     """Returns an authorized Requests Session class using the service account
@@ -326,6 +313,7 @@ def get_session(service_account_json):
 
     return session
 
+# Store a DICOM instance in the datastore
 def dicomweb_store_instance(args, dcm_file):
 
     """ Handles the POST requests specified in the DICOMweb standard. """
@@ -373,18 +361,18 @@ def dicomweb_store_instance(args, dcm_file):
 
 
 def processSeries(args, zip, api_key):
-#    create_dicom_store(args, api_key)
-#    zipFilesPath = getZipFromGCS(args, zip)
+    create_dicom_store(args, api_key)
+    zipFilesPath = getZipFromGCS(args, zip)
 
-#    dicoms = os.listdir(zipFilesPath)
-#    dicoms.sort()
+    dicoms = os.listdir(zipFilesPath)
+    dicoms.sort()
 
-#    for dicom in dicoms:
-#        dicomweb_store_instance(args, join(zipFilesPath,dicom))
-    export_dicom_instance(args, api_key)
+    for dicom in dicoms:
+        dicomweb_store_instance(args, join(zipFilesPath,dicom))
+    export_dicom_metadata(args, api_key)
 
     appendDones(args, zip)
-    cleanupSeries(args, http)
+    cleanupSeries(args, api_key)
 
 
 # Extract metadata from specified set of files in GCS
