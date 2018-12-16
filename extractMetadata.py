@@ -253,8 +253,9 @@ def wait_for_operation_completion1(path, timeout):
             break
         time.sleep(1)
 
+
     print('Full response:\n{0}'.format(response))
-    assert success, "operation did not complete successfully in time limit"
+    assert success, "Metadata export to BQ operation did not complete successfully in time limit"
     print('Success!')
     return response
 
@@ -273,7 +274,7 @@ def export_dicom_metadata(args, api_key):
         'bigQueryDestination': {
             'dataset': args.bq_dataset,
             'table': args.bq_table,
-            'overwriteTable': 'TRUE'
+            'overwriteTable': 'False'
         }
       }
     }
@@ -380,6 +381,8 @@ def scanZips(args, api_key):
     global zipFileCount
     for zip in zips:
         if not zip in dones:
+            if args.verbosity > 1:
+                print("Processing {}".format(zip))
             processSeries(args, zip, api_key)
             zipFileCount += 1
         else:
