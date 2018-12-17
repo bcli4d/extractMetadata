@@ -225,7 +225,8 @@ def wait_for_operation_completion(args, api_key, path, timeout):
 
     success = False
     while time.time() <timeout:
-        print('Waiting for operation completion...')
+        if time.time() % 10 == 0:
+            print('Waiting for operation completion for {} seconds'.format(time.time()))
         response = request.execute()
         if 'done' in response:
             if response['done'] == True and 'error' not in response:
