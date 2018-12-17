@@ -216,7 +216,7 @@ def cleanupSeries(args, api_key):
     shutil.rmtree(dicomDirectory)
     os.remove(zipfileName)
 
-def wait_for_operation_completion(args, api_key, path, timeout):
+def wait_for_operation_completion(args, api_key, path, timeout, start_time):
 
     """Export metadata to a BQ table"""
     client = get_client(args, api_key)
@@ -225,7 +225,7 @@ def wait_for_operation_completion(args, api_key, path, timeout):
 
     success = False
     while time.time() <timeout:
-        if time.time() % 10 == 0:
+        if int((time.time() - start_time)) % 10 == 0:
             print('Waiting for operation completion for {} seconds'.format(time.time()))
         response = request.execute()
         if 'done' in response:
@@ -239,7 +239,7 @@ def wait_for_operation_completion(args, api_key, path, timeout):
     print('Success!')
     return response
 
-
+'''
 def wait_for_operation_completion1(path, timeout):
     success = False
     while time.time() < timeout:
@@ -259,7 +259,7 @@ def wait_for_operation_completion1(path, timeout):
     assert success, "Metadata export to BQ operation did not complete successfully in time limit"
     print('Success!')
     return response
-
+'''
 
 def export_dicom_metadata(args, api_key):
 
@@ -288,10 +288,11 @@ def export_dicom_metadata(args, api_key):
         print('Exported DICOM metadata to table {}.{}: '.format(args.bq_dataset, args.bq_table))
         metadata_operation_name = response['name']
 
-        timeout = time.time() + 10 * 60  # Wait up to 10 minutes.
+        start_time = time.time()
+        timeout = start_time + 10 * 60  # Wait up to 10 minutes.
         path = join(HEALTHCARE_API_URL, metadata_operation_name)
         path = metadata_operation_name
-        response = wait_for_operation_completion(args, api_key, path, timeout)
+        response = wait_for_operation_completion(args, api_key, path, timeout, start_time)
 
         return response
     except HttpError as e:
