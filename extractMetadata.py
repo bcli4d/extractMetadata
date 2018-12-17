@@ -208,7 +208,7 @@ def getZipFromGCS(args, zip):
 
 # Remove zip file and extracted .dcms of a series after processing
 def cleanupSeries(args, api_key):
-    delete_dicom_store(args, api_key)
+#    delete_dicom_store(args, api_key)
 
     zipfileName = join(args.scratch,'dcm.zip')
     dicomDirectory = join(args.scratch,'dicoms')
