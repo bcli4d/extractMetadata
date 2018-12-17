@@ -421,7 +421,7 @@ def parse_args():
                         default='cgc-05-0011-metadata-upload-dataset')
     parser.add_argument("--dicom_store_id", type=str, help="Google Healthcare data store",
                         default='cgc-05-0011-dicomstore')
-    parser.add_argument(" -s --service_account", type=str, help="File containing service account",
+    parser.add_argument("-s --service_account", type=str, help="File containing service account",
                         default='/Users/BillClifford/Documents/RadiologyImaging-67b73cac922b.json')
  #   parser.add_argument("--service_account", type=str, help="File containing service account",
  #                       default='/Users/BillClifford/Downloads/RadiologyImaging-ea433bc1d422.json')
