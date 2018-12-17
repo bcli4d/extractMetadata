@@ -168,7 +168,6 @@ def delete_dicom_store(args, api_key):
 def create_dicom_store(args, api_key):
     """Creates a new DICOM store within the parent dataset."""
     dicom_stores = list_dicom_stores(args, api_key)
-
     if len(dicom_stores) > 0 :
         delete_dicom_store(args, api_key)
 
@@ -365,7 +364,7 @@ def dicomweb_store_instance(args, dcm_file):
 
 
 def processSeries(args, zip, api_key):
-    create_dicom_store(args, api_key)
+#    create_dicom_store(args, api_key)
     zipFilesPath = getZipFromGCS(args, zip)
 
     dicoms = os.listdir(zipFilesPath)
@@ -373,7 +372,7 @@ def processSeries(args, zip, api_key):
 
     for dicom in dicoms:
         dicomweb_store_instance(args, join(zipFilesPath,dicom))
-    export_dicom_metadata(args, api_key)
+#    export_dicom_metadata(args, api_key)
 
     appendDones(args, zip)
     cleanupSeries(args, api_key)
@@ -381,6 +380,7 @@ def processSeries(args, zip, api_key):
 
 # Extract metadata from specified set of files in GCS
 def scanZips(args, api_key):
+    create_dicom_store(args, api_key)
     global zipFileCount
     for zip in zips:
         if not zip in dones:
@@ -391,6 +391,7 @@ def scanZips(args, api_key):
         else:
             if args.verbosity > 1:
                 print("Previously done {}".format(zip))
+    export_dicom_metadata(args, api_key)
     return zipFileCount
 
 def setup(args):
