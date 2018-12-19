@@ -490,19 +490,20 @@ def scanZips(args, api_key):
                 if args.verbosity > 1:
                     print("Previously done {}".format(zip))
     else:
-        create_dicom_store(args, api_key)
-        for zip in zips:
-            if not zip in dones:
-                if args.verbosity > 1:
-                    print("Processing {}".format(zip))
-                load_series_into_dicom_store(args, zip, api_key)
-                appendDones(args, zip)
+        if not args.append:
+            create_dicom_store(args, api_key)
+            for zip in zips:
+                if not zip in dones:
+                    if args.verbosity > 1:
+                        print("Processing {}".format(zip))
+                    load_series_into_dicom_store(args, zip, api_key)
+                    appendDones(args, zip)
 
-                zipFileCount += 1
-            else:
-                if args.verbosity > 1:
-                    print("Previously done {}".format(zip))
-        export_dicom_metadata(args, api_key)
+                    zipFileCount += 1
+                else:
+                    if args.verbosity > 1:
+                        print("Previously done {}".format(zip))
+            export_dicom_metadata(args, api_key)
         append_to_cumulative_table(args, api_key)
 
 #    export_dicom_metadata(args, api_key)
@@ -549,6 +550,8 @@ def parse_args():
     parser.add_argument("--scratch", type=str, help="path to scratch directory",
                         default='.')
     parser.add_argument("--compact", type=bool, help="True to generate a row per series; False to generate a row per instance",
+                        default=False)
+    parser.add_argument("--append", type=bool, help="True: skip loading DICOM datastore and exporting metadata, just append temp BQ table ",
                         default=False)
 
     return parser.parse_args()
