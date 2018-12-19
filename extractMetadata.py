@@ -38,7 +38,6 @@ import pandas as pd
 
 zipFileCount = 0
 zips = set()
-excludes = []
 includes = []
 dones = []
 service_account_json = ""
@@ -66,19 +65,6 @@ def loadZips(args):
         zips = sorted(list(strings))
         #print("zips: {}".format(zips))
     return zips
-
-# Build a list of column names to exclude
-def loadExcludes(args):
-    with open(args.excludes) as f:
-        strings = f.read().splitlines()
-        excludes = list(strings)
-        #print("excludes: {}".format(excludes))
-    return excludes
-
-# Save possibly updated list of column names to exclude
-def saveExcludes(args):
-    with open(args.excludes, 'w') as f:
-        f.write(json.dumps(excludes).encode())
 
 # Build a list of column names to include
 def loadIncludes(args):
@@ -240,7 +226,6 @@ def getZipFromGCS(args, zip):
 
 # Remove zip file and extracted .dcms of a series after processing
 def cleanupSeries(args, api_key):
-#    delete_dicom_store(args, api_key)
 
     zipfileName = join(args.scratch,'dcm.zip')
     dicomDirectory = join(args.scratch,'dicoms')
@@ -271,27 +256,6 @@ def wait_for_operation_completion(args, api_key, path, timeout, start_time):
     print('Success!')
     return response
 
-'''
-def wait_for_operation_completion1(path, timeout):
-    success = False
-    while time.time() < timeout:
-        print('Waiting for operation completion...')
-        resp, content = http.request(path, method='GET')
-        assert resp.status == 200, 'error polling for Operation results, code: {0}, response: {1}'.format(resp.status,
-                                                                                                          content)
-        response = json.loads(content)
-        if 'done' in response:
-            if response['done'] == True and 'error' not in response:
-                success = True;
-            break
-        time.sleep(1)
-
-
-    print('Full response:\n{0}'.format(response))
-    assert success, "Metadata export to BQ operation did not complete successfully in time limit"
-    print('Success!')
-    return response
-'''
 
 def export_dicom_metadata(args, api_key):
 
@@ -396,7 +360,7 @@ def dicomweb_store_instance(args, dcm_file):
         return ""
 
 
-def processSeries(args, zip, api_key):
+def load_series_into_dicom_store(args, zip, api_key):
 #    create_dicom_store(args, api_key)
     zipFilesPath = getZipFromGCS(args, zip)
 
@@ -411,8 +375,8 @@ def processSeries(args, zip, api_key):
     cleanupSeries(args, api_key)
 
 
-# Addend per-series metadata to a table where it is being accumulated
-def appendToCumTable(args, api_key):
+# Append per-series metadata to a table where it is being accumulated
+def append_to_cumulative_table(args, api_key):
     global excludes
     client = bigquery.Client(project=args.project_id)
 
@@ -426,71 +390,68 @@ def appendToCumTable(args, api_key):
         print(t1_meta.description)
         print(t1_meta.num_rows)
 
-    # We're not including structured data so
-    # Find the column names that are not repeated or nested
-    # and are not vendor specific
-    colList = []
-    for mi in t1_meta.schema:
-        if mi.mode != 'REPEATED' and \
-                mi.field_type != 'RECORD' and \
-                mi.name.find('Tag_') < 0 and\
-                not mi.name in excludes:  # struct too?
-            l1 = ([mi.name, mi.mode, mi.field_type])
-            colList.append(l1)
+    if args.compact:
+        # This path finds all columns that have a single value and creates a single row to be
+        # appended to the cumulative table.
 
-    if args.verbosity > 2:
-        print(colList[0:5])
+        # We do not include structured data in this path so
+        # find the column names that are not repeated or nested
+        # and are not vendor specific
+        colList = []
+        for mi in t1_meta.schema:
+            if mi.mode != 'REPEATED' and mi.field_type != 'RECORD':  # struct too?
+                l1 = ([mi.name, mi.mode, mi.field_type])
+                colList.append(l1)
 
-    # Then for columns that are not repeated or nested, get the number of unique values #
-    sqlstr = 'SELECT\n'
+        if args.verbosity > 2:
+            print(colList[0:5])
 
-    n = len(colList)
-    print(n)
+        # Then for columns that are not repeated or nested, get the number of unique values #
+        sqlstr = 'SELECT\n'
 
-    for li in colList[0:(n - 1)]:
-        sqlstr += 'COUNT(DISTINCT( `' + li[0] + '` )),\n'
-    sqlstr += 'COUNT(DISTINCT( `' + colList[(n - 1)][0] + '` ))\n'
-#    sqlstr += 'FROM `cgc-05-0011.working.dicom_metadata_ghc`\n'
-    sqlstr += 'FROM `{}.{}.{}`\n'.format(args.project_id, args.bq_dataset_id, args.bq_temp_table)
+        n = len(colList)
+        print(n)
 
-    if args.verbosity > 2:
-        print(sqlstr)
+        for li in colList[0:(n - 1)]:
+            sqlstr += 'COUNT(DISTINCT( `' + li[0] + '` )),\n'
+        sqlstr += 'COUNT(DISTINCT( `' + colList[(n - 1)][0] + '` ))\n'
+        sqlstr += 'FROM `{}.{}.{}`\n'.format(args.project_id, args.bq_dataset_id, args.bq_temp_table)
 
-    query_job = client.query(sqlstr, )  # API request - starts the query
-    query_job.done()
-    df1 = query_job.to_dataframe()
+        if args.verbosity > 2:
+            print(sqlstr)
 
-    # Here's the columns that have a single value.
-    if args.verbosity > 2:
-        for i, ci in enumerate(df1.columns):
-            uvals = int(df1[ci])
-            if uvals == 1:
-                print(str(uvals) + '\t' + colList[i][0])
+        query_job = client.query(sqlstr, )  # API request - starts the query
+        query_job.done()
+        df1 = query_job.to_dataframe()
 
-    # We use the results to create a new query
-    # and get the single row identifier for this dataset.table
-    sqlstr = 'SELECT\n'
+        # Here's the columns that have a single value.
+        if args.verbosity > 2:
+            for i, ci in enumerate(df1.columns):
+                uvals = int(df1[ci])
+                if uvals == 1:
+                    print(str(uvals) + '\t' + colList[i][0])
 
-    for i, ci in enumerate(df1.columns[0:len(df1.columns)-1]):
-        if int(df1[ci]) == 1:
-            sqlstr += '`{}`,\n'.format( colList[i][0])
-        else:
-            excludes.append(colList[i][0])
-    if int(df1[df1.columns[-1]]) == 1:
-        sqlstr += '`{}`\n'.format( colList[-1][0])
-    sqlstr += 'FROM `{}.{}.{}`\n'.format(args.project_id, args.bq_dataset_id, args.bq_temp_table)
-    sqlstr += 'LIMIT 1\n'
+        # We use the results to create a new query
+        # and get the single row identifier for this dataset.table
+        sqlstr = 'SELECT\n'
 
-    if args.verbosity > 2:
-        print(sqlstr)
+        for i, ci in enumerate(df1.columns[0:len(df1.columns)-1]):
+            if int(df1[ci]) == 1:
+                sqlstr += '`{}`,\n'.format( colList[i][0])
+        if int(df1[df1.columns[-1]]) == 1:
+            sqlstr += '`{}`\n'.format( colList[-1][0])
+        sqlstr += 'FROM `{}.{}.{}`\n'.format(args.project_id, args.bq_dataset_id, args.bq_temp_table)
+        sqlstr += 'LIMIT 1\n'
 
-    query_job = client.query(sqlstr, )  # API request - starts the query
-    query_job.done()
-    values = query_job.to_dataframe()
+        if args.verbosity > 2:
+            print(sqlstr)
+    else:
+        # Append the entire exported metadata table to the cumulative table
+        sqlstr = 'SELECT *\n'
+        sqlstr += 'FROM `{}.{}.{}`\n'.format(args.project_id, args.bq_dataset_id, args.bq_temp_table)
+        if args.verbosity > 2:
+            print(sqlstr)
 
-#    if args.verbosity > 1:
-#        print(values)
-#
     job_config = bigquery.QueryJobConfig()
     # Set the destination table
     table_ref = client.dataset(args.bq_dataset_id).table(args.bq_cum_table)
@@ -513,21 +474,37 @@ def appendToCumTable(args, api_key):
 def scanZips(args, api_key):
 #    create_dicom_store(args, api_key)
     global zipFileCount
-    for zip in zips:
-        if not zip in dones:
-            if args.verbosity > 1:
-                print("Processing {}".format(zip))
-#            create_dicom_store(args, api_key)
-#            processSeries(args, zip, api_key)
-#            export_dicom_metadata(args, api_key)
-            appendToCumTable(args, api_key)
-            appendDones(args, zip)
-            saveExcludes(args)
+    if args.compact:
+        for zip in zips:
+            if not zip in dones:
+                if args.verbosity > 1:
+                    print("Processing {}".format(zip))
+                create_dicom_store(args, api_key)
+                load_series_into_dicom_store(args, zip, api_key)
+                export_dicom_metadata(args, api_key)
+                append_to_cumulative_table(args, api_key)
+                appendDones(args, zip)
 
-            zipFileCount += 1
-        else:
-            if args.verbosity > 1:
-                print("Previously done {}".format(zip))
+                zipFileCount += 1
+            else:
+                if args.verbosity > 1:
+                    print("Previously done {}".format(zip))
+    else:
+        create_dicom_store(args, api_key)
+        for zip in zips:
+            if not zip in dones:
+                if args.verbosity > 1:
+                    print("Processing {}".format(zip))
+                load_series_into_dicom_store(args, zip, api_key)
+                appendDones(args, zip)
+
+                zipFileCount += 1
+            else:
+                if args.verbosity > 1:
+                    print("Previously done {}".format(zip))
+        export_dicom_metadata(args, api_key)
+        append_to_cumulative_table(args, api_key)
+
 #    export_dicom_metadata(args, api_key)
     return zipFileCount
 
@@ -539,9 +516,8 @@ def setup(args):
     create_gh_dataset(args, api_key)
     dones = loadDones(args)
     zips = loadZips(args)
-    excludes = loadExcludes(args)
 
-    return (dones, zips, http, api_key, excludes)
+    return (dones, zips, http, api_key)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Build DICOM image metadata table")
@@ -556,10 +532,10 @@ def parse_args():
                         default='cgc-05-0011')
     parser.add_argument("--bq_dataset_id", type=str, help="BQ metadata dataset",
                         default='working')
-    parser.add_argument("--bq_temp_table1", type=str, help="Temporary BQ metadata table",
-                        default='dicom_temp_metadata_ghc')
-    parser.add_argument("--bq_cum_table1", type=str, help="Cumulative_BQ metadata table",
-                        default='dicom_cum_metadata_ghc')
+    parser.add_argument("--bq_temp_table", type=str, help="Temporary BQ metadata table",
+                        default='dicom_temp_metadata_ghc1')
+    parser.add_argument("--bq_cum_table", type=str, help="Cumulative_BQ metadata table",
+                        default='dicom_cum_metadata_ghc1')
     parser.add_argument("--location", type=str, help="Google Healthcare location",
                         default='us-central1')
     parser.add_argument("--gh_dataset_id", type=str, help="Google Healthcare dataset",
@@ -572,6 +548,8 @@ def parse_args():
                         default='/Users/BillClifford/Documents/api_key.txt')
     parser.add_argument("--scratch", type=str, help="path to scratch directory",
                         default='.')
+    parser.add_argument("--compact", type=bool, help="True to generate a row per series; False to generate a row per instance",
+                        default=False)
 
     return parser.parse_args()
 
@@ -581,7 +559,7 @@ if __name__ == '__main__':
     args = parse_args()
 
     # Initialize work variables from previously generated data in files
-    dones, zips, http, api_key, excludes = setup(args)
+    dones, zips, http, api_key = setup(args)
 
     t0 = time.time()
     fileCount = scanZips(args, api_key)
