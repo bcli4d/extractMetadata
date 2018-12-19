@@ -20,10 +20,11 @@ from oauth2client.client import GoogleCredentials
 
 from googleapiclient import discovery
 from google.oauth2 import service_account
-#from requests import HTTPError
 
 from google.auth.transport import requests
 from googleapiclient.errors import HttpError
+
+from google.cloud import bigquery
 
 from email import encoders
 #from email.mime.application import MIMEApplication
@@ -32,8 +33,13 @@ import email.mime.application as application
 import email.mime.multipart as multipart
 import email
 
+import numpy as np
+import pandas as pd
+
 zipFileCount = 0
 zips = set()
+excludes = []
+includes = []
 dones = []
 service_account_json = ""
 api_key = ""
@@ -60,6 +66,32 @@ def loadZips(args):
         zips = sorted(list(strings))
         #print("zips: {}".format(zips))
     return zips
+
+# Build a list of column names to exclude
+def loadExcludes(args):
+    with open(args.excludes) as f:
+        strings = f.read().splitlines()
+        excludes = list(strings)
+        #print("excludes: {}".format(excludes))
+    return excludes
+
+# Save possibly updated list of column names to exclude
+def saveExcludes(args):
+    with open(args.excludes, 'w') as f:
+        f.write(json.dumps(excludes).encode())
+
+# Build a list of column names to include
+def loadIncludes(args):
+    with open(args.includes) as f:
+        strings = f.read().splitlines()
+        includes = list(strings)
+        #print("includes: {}".format(includes))
+    return includes
+
+# Save possibly updated list of column names to include
+def saveIncludes(args):
+    with open(args.includes, 'w') as f:
+        f.write(json.dumps(includes).encode())
 
 def get_client(args, api_key):
     """Returns an authorized API client by discovering the Healthcare API and
@@ -89,7 +121,7 @@ def get_dataset(args,
     """Gets any metadata associated with a dataset."""
     client = get_client(args, api_key)
     dataset_name = 'projects/{}/locations/{}/datasets/{}'.format(
-        args.project_id, args.location, args.dataset_id)
+        args.project_id, args.location, args.gh_dataset_id)
 
     datasets = client.projects().locations().datasets()
     dataset = datasets.get(name=dataset_name).execute()
@@ -99,11 +131,11 @@ def get_dataset(args,
 
     return dataset
 
-def createDataset(args,
+def create_gh_dataset(args,
         api_key):
     """Creates a dataset."""
     dataset = get_dataset(args, api_key)
-    if dataset['name'].find(args.dataset_id) < 0 :
+    if dataset['name'].find(args.gh_dataset_id) < 0 :
         client = get_client(args, api_key)
         dataset_parent = 'projects/{}/locations/{}'.format(
             args.project_id, args.location)
@@ -111,11 +143,11 @@ def createDataset(args,
         body = {}
 
         request = client.projects().locations().datasets().create(
-            parent=dataset_parent, body=body, datasetId=args.dataset_id)
+            parent=dataset_parent, body=body, datasetId=args.gh_dataset_id)
 
         try:
             response = request.execute()
-            print('Created dataset: {}'.format(dataset_id))
+            print('Created dataset: {}'.format(gh_dataset_id))
             return response
         except HttpError as e:
             print('Error, dataset not created: {}'.format(e))
@@ -125,9 +157,9 @@ def list_dicom_stores(args, api_key):
     """Lists the DICOM stores in the given dataset."""
     client = get_client(args, api_key)
     dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(
-        args.project_id, args.location, args.dataset_id)
+        args.project_id, args.location, args.gh_dataset_id)
     dicom_store_name = '{}/dicomStores/{}'.format(
-        dicom_store_parent, args.dicom_store_id)
+        dicom_store_parent, args.gh_dicom_store_id)
 
 #    request = client.projects().locations().datasets().dicomStores().execute(name=dicom_store_name)
 
@@ -150,15 +182,15 @@ def delete_dicom_store(args, api_key):
 
     client = get_client(args, api_key)
     dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(
-        args.project_id, args.location, args.dataset_id)
+        args.project_id, args.location, args.gh_dataset_id)
     dicom_store_name = '{}/dicomStores/{}'.format(
-        dicom_store_parent, args.dicom_store_id)
+        dicom_store_parent, args.gh_dicom_store_id)
 
     request = client.projects().locations().datasets().dicomStores().delete(name=dicom_store_name)
 
     try:
         response = request.execute()
-        print('Deleted DICOM store: {}'.format(args.dicom_store_id))
+        print('Deleted DICOM store: {}'.format(args.gh_dicom_store_id))
         return response
     except HttpError as e:
         print('Error, DICOM store not deleted: {}'.format(e))
@@ -172,16 +204,16 @@ def create_dicom_store(args, api_key):
         delete_dicom_store(args, api_key)
 
     client = get_client(args, api_key)
-    dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(args.project_id, args.location, args.dataset_id)
+    dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(args.project_id, args.location, args.gh_dataset_id)
 
     body = {}
 
     request = client.projects().locations().datasets().dicomStores().create(
-        parent=dicom_store_parent, body=body, dicomStoreId=args.dicom_store_id)
+        parent=dicom_store_parent, body=body, dicomStoreId=args.gh_dicom_store_id)
 
     try:
         response = request.execute()
-        print('Created DICOM store: {}'.format(args.dicom_store_id))
+        print('Created DICOM store: {}'.format(args.gh_dicom_store_id))
         return response
     except HttpError as e:
         print('Error, DICOM store not created: {}'.format(e))
@@ -266,15 +298,15 @@ def export_dicom_metadata(args, api_key):
     """Export metadata to a BQ table"""
     client = get_client(args, api_key)
     dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(
-        args.project_id, args.location, args.dataset_id)
+        args.project_id, args.location, args.gh_dataset_id)
     dicom_store_name = '{}/dicomStores/{}'.format(
-        dicom_store_parent, args.dicom_store_id)
+        dicom_store_parent, args.gh_dicom_store_id)
 
     body = {
       'outputConfig': {
         'bigQueryDestination': {
-            'dataset': args.bq_dataset,
-            'table': args.bq_table,
+            'dataset': args.bq_dataset_id,
+            'table': args.bq_temp_table,
             'overwriteTable': 'True'
         }
       }
@@ -285,7 +317,7 @@ def export_dicom_metadata(args, api_key):
 
     try:
         response = request.execute()
-        print('Exported DICOM metadata to table {}.{}: '.format(args.bq_dataset, args.bq_table))
+        print('Exporting DICOM metadata to table {}.{}: '.format(args.bq_dataset_id, args.bq_temp_table))
         metadata_operation_name = response['name']
 
         start_time = time.time()
@@ -326,7 +358,7 @@ def dicomweb_store_instance(args, dcm_file):
                                                args.project_id, args.location)
 
     dicomweb_path = '{}/datasets/{}/dicomStores/{}/dicomWeb/studies'.format(
-        url, args.dataset_id, args.dicom_store_id)
+        url, args.gh_dataset_id, args.gh_dicom_store_id)
 
     # Make an authenticated API request
     session = get_session(args.service_account)
@@ -355,8 +387,9 @@ def dicomweb_store_instance(args, dcm_file):
             data=multipart_body.as_string(),
             headers=headers)
         response.raise_for_status()
-        print('Stored DICOM instance:')
-        print(response.text)
+        if args.verbosity > 2:
+            print('Stored DICOM instance:')
+            print(response.text)
         return response
     except HttpError as err:
         print(err)
@@ -374,24 +407,128 @@ def processSeries(args, zip, api_key):
         dicomweb_store_instance(args, join(zipFilesPath,dicom))
 #    export_dicom_metadata(args, api_key)
 
-    appendDones(args, zip)
+#    appendDones(args, zip)
     cleanupSeries(args, api_key)
 
 
-# Extract metadata from specified set of files in GCS
+# Addend per-series metadata to a table where it is being accumulated
+def appendToCumTable(args, api_key):
+    global excludes
+    client = bigquery.Client(project=args.project_id)
+
+    dataset_ref = client.dataset(args.bq_dataset_id)
+    table_ref = dataset_ref.table(args.bq_temp_table)
+    t1_meta = client.get_table(table_ref)  # API Request
+
+    if args.verbosity > 3:
+        # View table properties
+        print(t1_meta.schema)
+        print(t1_meta.description)
+        print(t1_meta.num_rows)
+
+    # We're not including structured data so
+    # Find the column names that are not repeated or nested
+    # and are not vendor specific
+    colList = []
+    for mi in t1_meta.schema:
+        if mi.mode != 'REPEATED' and \
+                mi.field_type != 'RECORD' and \
+                mi.name.find('Tag_') < 0 and\
+                not mi.name in excludes:  # struct too?
+            l1 = ([mi.name, mi.mode, mi.field_type])
+            colList.append(l1)
+
+    if args.verbosity > 2:
+        print(colList[0:5])
+
+    # Then for columns that are not repeated or nested, get the number of unique values #
+    sqlstr = 'SELECT\n'
+
+    n = len(colList)
+    print(n)
+
+    for li in colList[0:(n - 1)]:
+        sqlstr += 'COUNT(DISTINCT( `' + li[0] + '` )),\n'
+    sqlstr += 'COUNT(DISTINCT( `' + colList[(n - 1)][0] + '` ))\n'
+#    sqlstr += 'FROM `cgc-05-0011.working.dicom_metadata_ghc`\n'
+    sqlstr += 'FROM `{}.{}.{}`\n'.format(args.project_id, args.bq_dataset_id, args.bq_temp_table)
+
+    if args.verbosity > 2:
+        print(sqlstr)
+
+    query_job = client.query(sqlstr, )  # API request - starts the query
+    query_job.done()
+    df1 = query_job.to_dataframe()
+
+    # Here's the columns that have a single value.
+    if args.verbosity > 2:
+        for i, ci in enumerate(df1.columns):
+            uvals = int(df1[ci])
+            if uvals == 1:
+                print(str(uvals) + '\t' + colList[i][0])
+
+    # We use the results to create a new query
+    # and get the single row identifier for this dataset.table
+    sqlstr = 'SELECT\n'
+
+    for i, ci in enumerate(df1.columns[0:len(df1.columns)-1]):
+        if int(df1[ci]) == 1:
+            sqlstr += '`{}`,\n'.format( colList[i][0])
+        else:
+            excludes.append(colList[i][0])
+    if int(df1[df1.columns[-1]]) == 1:
+        sqlstr += '`{}`\n'.format( colList[-1][0])
+    sqlstr += 'FROM `{}.{}.{}`\n'.format(args.project_id, args.bq_dataset_id, args.bq_temp_table)
+    sqlstr += 'LIMIT 1\n'
+
+    if args.verbosity > 2:
+        print(sqlstr)
+
+    query_job = client.query(sqlstr, )  # API request - starts the query
+    query_job.done()
+    values = query_job.to_dataframe()
+
+#    if args.verbosity > 1:
+#        print(values)
+#
+    job_config = bigquery.QueryJobConfig()
+    # Set the destination table
+    table_ref = client.dataset(args.bq_dataset_id).table(args.bq_cum_table)
+    job_config.destination = table_ref
+    job_config.write_disposition = 'WRITE_APPEND'
+    job_config.schemaUpdateOptions = ['ALLOW_FIELD_ADDITION', 'ALLOW_FIELD_RELAXATION']
+
+    # Start the query, passing in the extra configuration.
+    query_job = client.query(
+        sqlstr,
+        # Location must match that of the dataset(s) referenced in the query
+        # and of the destination table.
+        location="US",
+        job_config=job_config,
+    )  # API request - starts the query
+
+    query_job.result()  # Wait for the query to finish
+    print("Query results loaded to table {}".format(table_ref.path))
+
 def scanZips(args, api_key):
-    create_dicom_store(args, api_key)
+#    create_dicom_store(args, api_key)
     global zipFileCount
     for zip in zips:
         if not zip in dones:
             if args.verbosity > 1:
                 print("Processing {}".format(zip))
-            processSeries(args, zip, api_key)
+#            create_dicom_store(args, api_key)
+#            processSeries(args, zip, api_key)
+#            export_dicom_metadata(args, api_key)
+            appendToCumTable(args, api_key)
+            appendDones(args, zip)
+            saveExcludes(args)
+
             zipFileCount += 1
         else:
             if args.verbosity > 1:
                 print("Previously done {}".format(zip))
-    export_dicom_metadata(args, api_key)
+#    export_dicom_metadata(args, api_key)
     return zipFileCount
 
 def setup(args):
@@ -399,11 +536,12 @@ def setup(args):
     http = GoogleCredentials.get_application_default().authorize(http)
     with open(args.api_key) as f:
         api_key = f.read().rstrip()
-    createDataset(args, api_key)
+    create_gh_dataset(args, api_key)
     dones = loadDones(args)
     zips = loadZips(args)
+    excludes = loadExcludes(args)
 
-    return (dones, zips, http, api_key)
+    return (dones, zips, http, api_key, excludes)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Build DICOM image metadata table")
@@ -412,22 +550,24 @@ def parse_args():
                         default='./zips.txt')
     parser.add_argument("-d", "--dones", type=str, help="path to file containing names of processed series",
                         default='./dones.txt')
+    parser.add_argument("--excludes", type=str, help="path to file containing column names to exclude",
+                        default='./excludes.txt')
     parser.add_argument("--project_id", type=str, help="Project ID",
                         default='cgc-05-0011')
-    parser.add_argument("--bq_dataset", type=str, help="BQ metadata dataset",
+    parser.add_argument("--bq_dataset_id", type=str, help="BQ metadata dataset",
                         default='working')
-    parser.add_argument("--bq_table", type=str, help="BQ metadata table",
-                        default='dicom_metadata_ghc')
+    parser.add_argument("--bq_temp_table1", type=str, help="Temporary BQ metadata table",
+                        default='dicom_temp_metadata_ghc')
+    parser.add_argument("--bq_cum_table1", type=str, help="Cumulative_BQ metadata table",
+                        default='dicom_cum_metadata_ghc')
     parser.add_argument("--location", type=str, help="Google Healthcare location",
                         default='us-central1')
-    parser.add_argument("--dataset_id", type=str, help="Google Healthcare dataset",
+    parser.add_argument("--gh_dataset_id", type=str, help="Google Healthcare dataset",
                         default='cgc-05-0011-metadata-upload-dataset')
-    parser.add_argument("--dicom_store_id", type=str, help="Google Healthcare data store",
+    parser.add_argument("--gh_dicom_store_id", type=str, help="Google Healthcare data store",
                         default='cgc-05-0011-dicomstore')
     parser.add_argument("-s", "--service_account", type=str, help="File containing service account",
                         default='/Users/BillClifford/Documents/RadiologyImaging-67b73cac922b.json')
- #   parser.add_argument("--service_account", type=str, help="File containing service account",
- #                       default='/Users/BillClifford/Downloads/RadiologyImaging-ea433bc1d422.json')
     parser.add_argument("-a", "--api_key", type=str, help="API key",
                         default='/Users/BillClifford/Documents/api_key.txt')
     parser.add_argument("--scratch", type=str, help="path to scratch directory",
@@ -441,7 +581,7 @@ if __name__ == '__main__':
     args = parse_args()
 
     # Initialize work variables from previously generated data in files
-    dones, zips, http, api_key = setup(args)
+    dones, zips, http, api_key, excludes = setup(args)
 
     t0 = time.time()
     fileCount = scanZips(args, api_key)
