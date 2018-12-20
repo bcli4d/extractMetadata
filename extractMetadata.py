@@ -166,27 +166,31 @@ def list_dicom_stores(args, api_key):
 def delete_dicom_store(args, api_key):
     """Deletes the specified DICOM store."""
 
-    client = get_client(args, api_key)
-    dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(
-        args.project_id, args.location, args.gh_dataset_id)
-    dicom_store_name = '{}/dicomStores/{}'.format(
-        dicom_store_parent, args.gh_dicom_store_id)
+    dicom_stores = list_dicom_stores(args, api_key)
+    if len(dicom_stores) > 0:
+        for store in dicom_stores:
+            if store['name'].find(args.gh_dicom_store_id) >= 0:
+                client = get_client(args, api_key)
+                dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(
+                    args.project_id, args.location, args.gh_dataset_id)
+                dicom_store_name = '{}/dicomStores/{}'.format(
+                    dicom_store_parent, args.gh_dicom_store_id)
 
-    request = client.projects().locations().datasets().dicomStores().delete(name=dicom_store_name)
+                request = client.projects().locations().datasets().dicomStores().delete(name=dicom_store_name)
 
-    try:
-        response = request.execute()
-        print('Deleted DICOM store: {}'.format(args.gh_dicom_store_id))
-        return response
-    except HttpError as e:
-        print('Error, DICOM store not deleted: {}'.format(e))
-        return ""
+                try:
+                    response = request.execute()
+                    print('Deleted DICOM store: {}'.format(args.gh_dicom_store_id))
+                    return response
+                except HttpError as e:
+                    print('Error, DICOM store not deleted: {}'.format(e))
+                    return ""
 
 
 def create_dicom_store(args, api_key):
     """Creates a new DICOM store within the parent dataset."""
-    dicom_stores = list_dicom_stores(args, api_key)
-    if len(dicom_stores) > 0 :
+
+    if args.deleteStore:
         delete_dicom_store(args, api_key)
 
     client = get_client(args, api_key)
@@ -266,22 +270,37 @@ def export_dicom_metadata(args, api_key):
     dicom_store_name = '{}/dicomStores/{}'.format(
         dicom_store_parent, args.gh_dicom_store_id)
 
-    body = {
-      'outputConfig': {
-        'bigQueryDestination': {
-            'dataset': args.bq_dataset_id,
-            'table': args.bq_temp_table,
-            'overwriteTable': 'True'
+
+
+    if not args.incremental and not args.compact:
+        dest_table = args.bq_cum_table
+        body = {
+          'outputConfig': {
+            'bigQueryDestination': {
+                'dataset': args.bq_dataset_id,
+                'table': dest_table,
+                'overwriteTable': 'True'
+            }
+          }
         }
-      }
-    }
+    else:
+        dest_table = args.bq_temp_table
+        body = {
+            'outputConfig': {
+                'bigQueryDestination': {
+                    'dataset': args.bq_dataset_id,
+                    'table': dest_table,
+                    'overwriteTable': 'True'
+                }
+            }
+        }
 
     request = client.projects().locations().datasets().dicomStores().export(
         name=dicom_store_name, body=body)
 
     try:
         response = request.execute()
-        print('Exporting DICOM metadata to table {}.{}: '.format(args.bq_dataset_id, args.bq_temp_table))
+        print('Exporting DICOM metadata to table {}.{}: '.format(args.bq_dataset_id, dest_table))
         metadata_operation_name = response['name']
 
         start_time = time.time()
@@ -457,7 +476,7 @@ def append_to_cumulative_table(args, api_key):
     table_ref = client.dataset(args.bq_dataset_id).table(args.bq_cum_table)
     job_config.destination = table_ref
     job_config.write_disposition = 'WRITE_APPEND'
-    job_config.schemaUpdateOptions = ['ALLOW_FIELD_ADDITION', 'ALLOW_FIELD_RELAXATION']
+    job_config.schema_update_options = ['ALLOW_FIELD_ADDITION', 'ALLOW_FIELD_RELAXATION']
 
     # Start the query, passing in the extra configuration.
     query_job = client.query(
@@ -489,8 +508,8 @@ def scanZips(args, api_key):
             else:
                 if args.verbosity > 1:
                     print("Previously done {}".format(zip))
-    else:
-        if not args.append:
+    elif args.incremental:
+        if args.load:
             create_dicom_store(args, api_key)
             for zip in zips:
                 if not zip in dones:
@@ -505,8 +524,23 @@ def scanZips(args, api_key):
                         print("Previously done {}".format(zip))
             export_dicom_metadata(args, api_key)
         append_to_cumulative_table(args, api_key)
+    else:
+        if args.load:
+            create_dicom_store(args, api_key)
+            for zip in zips:
+                if not zip in dones:
+                    if args.verbosity > 1:
+                        print("Processing {}".format(zip))
+                    load_series_into_dicom_store(args, zip, api_key)
+                    appendDones(args, zip)
 
-#    export_dicom_metadata(args, api_key)
+                    zipFileCount += 1
+                else:
+                    if args.verbosity > 1:
+                        print("Previously done {}".format(zip))
+        export_dicom_metadata(args, api_key)
+
+    #    export_dicom_metadata(args, api_key)
     return zipFileCount
 
 def setup(args):
@@ -534,9 +568,9 @@ def parse_args():
     parser.add_argument("--bq_dataset_id", type=str, help="BQ metadata dataset",
                         default='working')
     parser.add_argument("--bq_temp_table", type=str, help="Temporary BQ metadata table",
-                        default='dicom_temp_metadata_ghc1')
+                        default='dicom_temp_metadata_ghc')
     parser.add_argument("--bq_cum_table", type=str, help="Cumulative_BQ metadata table",
-                        default='dicom_cum_metadata_ghc1')
+                        default='dicom_cum_metadata_ghc')
     parser.add_argument("--location", type=str, help="Google Healthcare location",
                         default='us-central1')
     parser.add_argument("--gh_dataset_id", type=str, help="Google Healthcare dataset",
@@ -551,7 +585,11 @@ def parse_args():
                         default='.')
     parser.add_argument("--compact", type=bool, help="True to generate a row per series; False to generate a row per instance",
                         default=False)
-    parser.add_argument("--append", type=bool, help="True: skip loading DICOM datastore and exporting metadata, just append temp BQ table ",
+    parser.add_argument("--incremental", type=bool, help="True: export metadata to temp table, then append to cum table; False just export to 'temp' table ",
+                        default=False)
+    parser.add_argument("--load", type=bool, help="True: load DICOMs to the datastore",
+                        default=True)
+    parser.add_argument("--deleteStore", type=bool, help="True: delete datastore before creating new one",
                         default=False)
 
     return parser.parse_args()
@@ -560,6 +598,7 @@ def parse_args():
 if __name__ == '__main__':
 
     args = parse_args()
+    print(args)
 
     # Initialize work variables from previously generated data in files
     dones, zips, http, api_key = setup(args)
