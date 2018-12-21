@@ -358,6 +358,8 @@ def dicomweb_search_series(args):
 
     for element in series_list:
         series.append(element['0020000E']['Value'][0])
+        if args.verbosity > 1:
+            print('{} in datastore'.format(element['0020000E']['Value'][0]))
 
     return series
 
