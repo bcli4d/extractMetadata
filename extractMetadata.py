@@ -17,6 +17,7 @@ import subprocess
 import shutil
 import httplib2
 from oauth2client.client import GoogleCredentials
+import distutils
 
 from googleapiclient import discovery
 from google.oauth2 import service_account
@@ -583,14 +584,14 @@ def parse_args():
                         default='/Users/BillClifford/Documents/api_key.txt')
     parser.add_argument("--scratch", type=str, help="path to scratch directory",
                         default='.')
-    parser.add_argument("--compact", type=bool, help="True to generate a row per series; False to generate a row per instance",
+    parser.add_argument("--compact", dest='compact', type=lambda x:bool(distutils.util.strtobool(x)), help="True to generate a row per series; False to generate a row per instance",
                         default=False)
-    parser.add_argument("--incremental", type=bool, help="True: export metadata to temp table, then append to cum table; False just export to 'temp' table ",
+    parser.add_argument("--incremental", dest='incremental', type=lambda x:bool(distutils.util.strtobool(x)), help="True: export metadata to temp table, then append to cum table; False just export to 'temp' table ",
                         default=False)
-    parser.add_argument("--load", type=bool, help="True: load DICOMs to the datastore",
+    parser.add_argument("--deleteStore", dest='deleteStore', type=lambda x:bool(distutils.util.strtobool(x)), help="True: delete datastore before creating new one",
+                        default=False)
+    parser.add_argument('--load', dest='load', type=lambda x:bool(distutils.util.strtobool(x)), help="True: export metadata to temp table, then append to cum table; False just export to 'temp' table ",
                         default=True)
-    parser.add_argument("--deleteStore", type=bool, help="True: delete datastore before creating new one",
-                        default=False)
 
     return parser.parse_args()
 
