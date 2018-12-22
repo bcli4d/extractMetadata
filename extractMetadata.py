@@ -40,15 +40,15 @@ import pandas as pd
 zipFileCount = 0
 zips = set()
 #includes = []
-series = []
-#dones = []
+#series = []
+dones = []
 service_account_json = ""
 api_key = ""
 
 
 HEALTHCARE_API_URL = 'https://healthcare.googleapis.com/v1alpha'
 
-'''
+
 # Get the series we've already processed
 def loadDones(args):
     if os.path.exists(args.dones):
@@ -65,6 +65,7 @@ def appendDones(args, zip):
     with open(args.dones, 'a') as f:
         f.write("{}\n".format(zip))
 
+'''
 # Build a list of column names to include
 def loadIncludes(args):
     with open(args.includes) as f:
@@ -341,9 +342,6 @@ def dicomweb_search_series(args):
     url = '{}/projects/{}/locations/{}'.format(args.base_url,
                                                args.project_id, args.location)
 
-    dicomweb_path = '{}/datasets/{}/dicomStores/{}/dicomWeb/series'.format(
-        url, args.gh_dataset_id, args.gh_dicom_store_id)
-
     # Make an authenticated API request
     session = get_session(args.service_account)
 
@@ -351,10 +349,23 @@ def dicomweb_search_series(args):
         'Content-Type': 'application/dicom+json; charset=utf-8'
     }
 
-    response = session.get(dicomweb_path, headers=headers)
-    response.raise_for_status()
+    skip = 0
+    limit = 1000
+    series_list = []
+    while True:
 
-    series_list = response.json()
+        dicomweb_path = '{}/datasets/{}/dicomStores/{}/dicomWeb/series?limit={}'.format(
+            url, args.gh_dataset_id, args.gh_dicom_store_id, limit)
+
+
+        response = session.get(dicomweb_path, headers=headers)
+        response.raise_for_status()
+
+        batch = response.json()
+        if len(batch) == 0:
+            break
+        series_list.extend(batch)
+        skip += limit
 
     for element in series_list:
         series.append(element['0020000E']['Value'][0])
@@ -422,7 +433,7 @@ def load_series_into_dicom_store(args, zip, api_key):
         dicomweb_store_instance(args, join(zipFilesPath,dicom))
 #    export_dicom_metadata(args, api_key)
 
-#    appendDones(args, zip)
+    appendDones(args, zip)
     cleanupSeries(args, api_key)
 
 
@@ -523,8 +534,9 @@ def append_to_cumulative_table(args, api_key):
     print("Query results loaded to table {}".format(table_ref.path))
 
 def zip_is_done(zip):
-    series_instance_uid = zip.split('.',2)[2].rsplit('.',1)[0]
-    return series_instance_uid in series
+    zip in dones
+#    series_instance_uid = zip.split('.',2)[2].rsplit('.',1)[0]
+#    return series_instance_uid in series
 
 def scanZips(args, api_key):
 #    create_dicom_store(args, api_key)
@@ -538,7 +550,6 @@ def scanZips(args, api_key):
                 load_series_into_dicom_store(args, zip, api_key)
                 export_dicom_metadata(args, api_key)
                 append_to_cumulative_table(args, api_key)
-#                appendDones(args, zip)
 
                 zipFileCount += 1
             else:
@@ -552,7 +563,6 @@ def scanZips(args, api_key):
                     if args.verbosity > 1:
                         print("Processing {}".format(zip))
                     load_series_into_dicom_store(args, zip, api_key)
-#                    appendDones(args, zip)
 
                     zipFileCount += 1
                 else:
@@ -567,7 +577,6 @@ def scanZips(args, api_key):
                     if args.verbosity > 1:
                         print("Processing {}".format(zip))
                     load_series_into_dicom_store(args, zip, api_key)
-#                    appendDones(args, zip)
 
                     zipFileCount += 1
                 else:
@@ -585,10 +594,10 @@ def setup(args):
         api_key = f.read().rstrip()
     create_gh_dataset(args, api_key)
     zips = loadZips(args)
+    dones = loadDones(args)
     create_dicom_store(args, api_key, delete=args.deleteStore)
-    series = dicomweb_search_series(args)
-
-    return (zips, http, api_key, series)
+#    series = dicomweb_search_series(args)
+    return (zips, http, api_key, dones)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Build DICOM image metadata table")
@@ -597,8 +606,8 @@ def parse_args():
                         default='./zips.txt')
     parser.add_argument("-base_url", type=str, help="Healthcare URL",
                         default='https://healthcare.googleapis.com/v1alpha')
-#    parser.add_argument("-d", "--dones", type=str, help="path to file containing names of processed series",
-#                        default='./dones.txt')
+    parser.add_argument("-d", "--dones", type=str, help="path to file containing names of processed series",
+                        default='./dones.txt')
     parser.add_argument("--excludes", type=str, help="path to file containing column names to exclude",
                         default='./excludes.txt')
     parser.add_argument("--project_id", type=str, help="Project ID",
@@ -627,7 +636,7 @@ def parse_args():
                         default=False)
     parser.add_argument("--deleteStore", dest='deleteStore', type=lambda x:bool(distutils.util.strtobool(x)), help="True: delete datastore before creating new one",
                         default=False)
-    parser.add_argument('--load', dest='load', type=lambda x:bool(distutils.util.strtobool(x)), help="True: export metadata to temp table, then append to cum table; False just export to 'temp' table ",
+    parser.add_argument('--load', dest='load', type=lambda x:bool(distutils.util.strtobool(x)), help="True: load all files to datastore; False just export to 'temp' table ",
                         default=True)
 
     return parser.parse_args()
@@ -639,7 +648,7 @@ if __name__ == '__main__':
     print(args)
 
     # Initialize work variables from previously generated data in files
-    zips, http, api_key, series = setup(args)
+    zips, http, api_key, dones = setup(args)
 
     t0 = time.time()
     fileCount = scanZips(args, api_key)
