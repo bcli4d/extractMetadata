@@ -534,7 +534,7 @@ def append_to_cumulative_table(args, api_key):
     print("Query results loaded to table {}".format(table_ref.path))
 
 def zip_is_done(zip):
-    zip in dones
+    return zip in dones
 #    series_instance_uid = zip.split('.',2)[2].rsplit('.',1)[0]
 #    return series_instance_uid in series
 
@@ -596,6 +596,7 @@ def setup(args):
     zips = loadZips(args)
     dones = loadDones(args)
     create_dicom_store(args, api_key, delete=args.deleteStore)
+
 #    series = dicomweb_search_series(args)
     return (zips, http, api_key, dones)
 
@@ -650,9 +651,17 @@ if __name__ == '__main__':
     # Initialize work variables from previously generated data in files
     zips, http, api_key, dones = setup(args)
 
+#    import yappi
+#    yappi.set_clock_type('cpu')
+#    yappi.start(builtins=True)
+
     t0 = time.time()
     fileCount = scanZips(args, api_key)
     t1 = time.time()
+
+#    stats = yappi.get_func_stats()
+#    stats.save('callgrind.out', type='callgrind')
+
 
     if args.verbosity > 0:
         print("{} zip files processed in {} seconds".format(fileCount, t1 - t0),
