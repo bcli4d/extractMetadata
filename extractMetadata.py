@@ -424,7 +424,7 @@ def dicomweb_store_instance(args, dcm_file):
                 print(response.text)
             return response
         except HttpError as err:
-            print(err)
+            print("{}".format(err), file=err.log)
             print("Sleeping for {} seconds".format(zzzz), file=err.log)
             sleep(zzzz)
             zzzz *=2
