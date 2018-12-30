@@ -228,7 +228,7 @@ def getZipFromGCS(args, zip):
     zipfileName = join(args.scratch, 'dcm.zip')
     dicomDirectory = join(args.scratch, 'dicoms')
 
-    subprocess.call(['gsutil', 'cp', zip, zipfileName])
+    subprocess.call(['gsutil', '-m', 'cp', zip, zipfileName])
 
     # Open the file and extract the .dcm files to scratch directory
     zf = zipfile.ZipFile(zipfileName)
