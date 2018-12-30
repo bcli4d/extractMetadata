@@ -40,7 +40,7 @@ import pandas as pd
 zipFileCount = 0
 zips = set()
 #includes = []
-#series = []
+series = []
 dones = []
 service_account_json = ""
 api_key = ""
@@ -60,10 +60,12 @@ def loadDones(args):
         dones = set()
     return dones
 
-    # Add name of processed file
+
+# Add name of processed file
 def appendDones(args, zip):
     with open(args.dones, 'a') as f:
         f.write("{}\n".format(zip))
+
 
 '''
 # Build a list of column names to include
@@ -80,6 +82,7 @@ def saveIncludes(args):
         f.write(json.dumps(includes).encode())
 '''
 
+
 # Build a list of files to process
 def loadZips(args):
     with open(args.zips) as f:
@@ -87,6 +90,7 @@ def loadZips(args):
         zips = sorted(list(strings))
         #print("zips: {}".format(zips))
     return zips
+
 
 def get_client(args, api_key):
     """Returns an authorized API client by discovering the Healthcare API and
@@ -171,7 +175,6 @@ def list_dicom_stores(args, api_key):
     return dicom_stores
 
 
-
 def delete_dicom_store(args, api_key):
     """Deletes the specified DICOM store."""
 
@@ -203,7 +206,8 @@ def create_dicom_store(args, api_key, delete=False):
         delete_dicom_store(args, api_key)
 
     client = get_client(args, api_key)
-    dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(args.project_id, args.location, args.gh_dataset_id)
+    dicom_store_parent = 'projects/{}/locations/{}/datasets/{}'.format(args.project_id,
+                        args.location, args.gh_dataset_id)
 
     body = {}
 
@@ -221,8 +225,8 @@ def create_dicom_store(args, api_key, delete=False):
 
 # Copy a zip file for some series from GCA and extract dicoms
 def getZipFromGCS(args, zip):
-    zipfileName = join(args.scratch,'dcm.zip')
-    dicomDirectory = join(args.scratch,'dicoms')
+    zipfileName = join(args.scratch, 'dcm.zip')
+    dicomDirectory = join(args.scratch, 'dicoms')
 
     subprocess.call(['gsutil', 'cp', zip, zipfileName])
 
@@ -235,8 +239,8 @@ def getZipFromGCS(args, zip):
 # Remove zip file and extracted .dcms of a series after processing
 def cleanupSeries(args, api_key):
 
-    zipfileName = join(args.scratch,'dcm.zip')
-    dicomDirectory = join(args.scratch,'dicoms')
+    zipfileName = join(args.scratch, 'dcm.zip')
+    dicomDirectory = join(args.scratch, 'dicoms')
     shutil.rmtree(dicomDirectory)
     os.remove(zipfileName)
 
@@ -407,19 +411,23 @@ def dicomweb_store_instance(args, dcm_file):
     content_type = ('multipart/related; type="application/dicom"; ' + 'boundary="%s"') % boundary
     headers = {'Content-Type': content_type}
 
-    try:
-        response = session.post(
-            dicomweb_path,
-            data=multipart_body.as_string(),
-            headers=headers)
-        response.raise_for_status()
-        if args.verbosity > 2:
-            print('Stored DICOM instance:')
-            print(response.text)
-        return response
-    except HttpError as err:
-        print(err)
-        return ""
+    zzzz = 1
+    while True:
+        try:
+            response = session.post(
+                dicomweb_path,
+                data=multipart_body.as_string(),
+                headers=headers)
+            response.raise_for_status()
+            if args.verbosity > 2:
+                print('Stored DICOM instance:')
+                print(response.text)
+            return response
+        except HttpError as err:
+            print(err)
+            print("Sleeping for {} seconds".format(zzzz))
+            sleep(zzzz)
+            zzzz *=2
 
 
 def load_series_into_dicom_store(args, zip, api_key):
@@ -439,7 +447,6 @@ def load_series_into_dicom_store(args, zip, api_key):
 
 # Append per-series metadata to a table where it is being accumulated
 def append_to_cumulative_table(args, api_key):
-    global excludes
     client = bigquery.Client(project=args.project_id)
 
     dataset_ref = client.dataset(args.bq_dataset_id)
@@ -598,7 +605,7 @@ def setup(args):
     create_dicom_store(args, api_key, delete=args.deleteStore)
 
 #    series = dicomweb_search_series(args)
-    return (zips, http, api_key, dones)
+    return zips, http, api_key, dones
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Build DICOM image metadata table")
@@ -609,8 +616,6 @@ def parse_args():
                         default='https://healthcare.googleapis.com/v1alpha')
     parser.add_argument("-d", "--dones", type=str, help="path to file containing names of processed series",
                         default='./dones.txt')
-    parser.add_argument("--excludes", type=str, help="path to file containing column names to exclude",
-                        default='./excludes.txt')
     parser.add_argument("--project_id", type=str, help="Project ID",
                         default='cgc-05-0011')
     parser.add_argument("--bq_dataset_id", type=str, help="BQ metadata dataset",
