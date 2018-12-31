@@ -7,16 +7,19 @@ Output result to standard out.
 """
 from __future__ import print_function
 
+import multiprocessing
 import os, sys
 import argparse
+import signal
 import zipfile
+from multiprocessing import Process
 from os.path import join
 import time
 import json
 import subprocess
 import shutil
 import httplib2
-from oauth2client.client import GoogleCredentials
+from oauth2client.client import GoogleCredentials, logger
 import distutils
 
 from googleapiclient import discovery
@@ -224,11 +227,11 @@ def create_dicom_store(args, api_key, delete=False):
 
 
 # Copy a zip file for some series from GCA and extract dicoms
-def getZipFromGCS(args, zip):
-    zipfileName = join(args.scratch, 'dcm.zip')
-    dicomDirectory = join(args.scratch, 'dicoms')
+def getZipFromGCS(args, zip, idx='0'):
+    zipfileName = join(args.scratch, idx, 'dcm.zip')
+    dicomDirectory = join(args.scratch, idx, 'dicoms')
 
-    subprocess.call(['gsutil', '-m', 'cp', zip, zipfileName])
+    subprocess.call(['gsutil', '-m', '-q', 'cp', zip, zipfileName])
 
     # Open the file and extract the .dcm files to scratch directory
     zf = zipfile.ZipFile(zipfileName)
@@ -237,12 +240,8 @@ def getZipFromGCS(args, zip):
     return dicomDirectory
 
 # Remove zip file and extracted .dcms of a series after processing
-def cleanupSeries(args, api_key):
-
-    zipfileName = join(args.scratch, 'dcm.zip')
-    dicomDirectory = join(args.scratch, 'dicoms')
-    shutil.rmtree(dicomDirectory)
-    os.remove(zipfileName)
+def cleanupSeries(args, api_key, idx='0'):
+    shutil.rmtree(join(args.scratch, idx))
 
 def wait_for_operation_completion(args, api_key, path, timeout, start_time):
 
@@ -429,6 +428,25 @@ def dicomweb_store_instance(args, dcm_file):
             sleep(zzzz)
             zzzz *=2
 
+# Load a series into a datastore; version called by multiprocessing path
+def load_series_into_dicom_store_multi(args, api_key, idx, mutex, sema):
+    zip = zips[idx]
+    zipFilesPath = getZipFromGCS(args, zip, str(idx))
+
+    dicoms = os.listdir(zipFilesPath)
+    dicoms.sort()
+
+    for dicom in dicoms:
+        dicomweb_store_instance(args, join(zipFilesPath, dicom))
+    #    export_dicom_metadata(args, api_key)
+
+    mutex.acquire()
+    appendDones(args, zip)
+    mutex.release()
+
+    cleanupSeries(args, api_key, str(idx))
+
+    sema.release()
 
 def load_series_into_dicom_store(args, zip, api_key):
 #    create_dicom_store(args, api_key)
@@ -545,6 +563,83 @@ def zip_is_done(zip):
 #    series_instance_uid = zip.split('.',2)[2].rsplit('.',1)[0]
 #    return series_instance_uid in series
 
+def multi_send_zips(arg, api_key):
+    # Register KeyboardInterrupt handler
+    original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+#    pool = multiprocessing.Pool(processes=args.max_concurrency)
+    signal.signal(signal.SIGINT, original_sigint_handler)
+
+    mutex = multiprocessing.Lock()
+
+    try:
+        '''
+        for idx, _ in enumerate(
+                pool.imap_unordered(_DownloadInstanceFromTCIA,
+                                    study_uid_to_series_uid.values()), 1):
+            # Provide an update every 100 instances uploaded.
+            if idx % 100 == 0:
+                logger.info("Imported [%s/%s] instances so far...", idx,
+                            total_instances_count)
+        '''
+        '''
+        for idx, _ in enumerate(
+                pool.imap_unordered(load_series_into_dicom_store_multi(args, zips, api_key, mutex), zips, 1)):
+            pass
+        '''
+        '''
+        idx = range(len(zips))
+        pool.imap_unordered(load_series_into_dicom_store_multi(args, api_key, idx, mutex), idx, 1)
+        '''
+        '''
+        params = [(args, api_key, idx, mutex) for idx in range(len(zips))]
+        for idx, _ in enumerate( pool.imap_unordered(load_series_into_dicom_store_multi, params, 1)):
+            # Provide an update every 100 instances uploaded.
+            if idx % 100 == 0:
+                logger.info("Imported [%s/%s] instances so far...", idx,
+                            total_instances_count)
+        '''
+        procs = []
+#        dirs = subprocess.check_output(['gsutil', 'ls', 'gs://isb-cgc-open/NCI-GDC/legacy/TCGA']).split('\n')
+        sema = multiprocessing.BoundedSemaphore(int(args.max_concurrency))
+
+        for idx in range(len(zips)):
+            if not zip_is_done(zips[idx]):
+                if args.verbosity > 1:
+                    mutex.acquire()
+                    print("Processing {}".format(zips[idx]))
+                    mutex.release()
+
+                sema.acquire()
+                p = multiprocessing.Process(target=load_series_into_dicom_store_multi, args=(args, api_key, idx, mutex, sema))
+                p.start()
+                procs.append((p, zips[idx]))
+            else:
+                if args.verbosity > 1:
+                    mutex.acquire()
+                    print("Previously done {}".format(zips[idx]))
+                    mutex.release()
+
+        for p in procs:
+            p[0].join()
+
+
+    except KeyboardInterrupt:
+        logger.error("Received keyboard interrupt - quitting...")
+#        pool.terminate()
+#        pool.join()
+        raise
+    except Exception:
+#        pool.terminate()
+#        pool.join()
+        raise
+    finally:
+#        pool.close()
+#        pool.join()
+        for p in procs:
+            p[0].join()
+
+    logger.info("Successfully uploaded all instances!")
+
 def scanZips(args, api_key):
 #    create_dicom_store(args, api_key)
     global zipFileCount
@@ -577,6 +672,10 @@ def scanZips(args, api_key):
                         print("Previously done {}".format(zip))
             export_dicom_metadata(args, api_key)
         append_to_cumulative_table(args, api_key)
+    elif args.max_concurrency >1:
+        if args.load:
+            multi_send_zips(args, api_key)
+        export_dicom_metadata(args, api_key)
     else:
         if args.load:
             for zip in zips:
@@ -636,6 +735,8 @@ def parse_args():
                         default='/Users/BillClifford/Documents/api_key.txt')
     parser.add_argument("--scratch", type=str, help="path to scratch directory",
                         default='.')
+    parser.add_argument("--max_concurrency", type=int, help="Max processes for multiprocessing",
+                        default=4)
     parser.add_argument("--compact", dest='compact', type=lambda x:bool(distutils.util.strtobool(x)), help="True to generate a row per series; False to generate a row per instance",
                         default=False)
     parser.add_argument("--incremental", dest='incremental', type=lambda x:bool(distutils.util.strtobool(x)), help="True: export metadata to temp table, then append to cum table; False just export to 'temp' table ",
