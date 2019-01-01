@@ -311,7 +311,7 @@ def export_dicom_metadata(args, api_key):
         metadata_operation_name = response['name']
 
         start_time = time.time()
-        timeout = start_time + 10 * 60  # Wait up to 10 minutes.
+        timeout = start_time + 100 * 60  # Wait up to an hour# .
         path = join(HEALTHCARE_API_URL, metadata_operation_name)
         path = metadata_operation_name
         response = wait_for_operation_completion(args, api_key, path, timeout, start_time)
